@@ -1,47 +1,21 @@
 import os
 from dotenv import load_dotenv
-
 import streamlit as st
-from langchain_core.messages import HumanMessage
 
-# Suppose we have a function that builds our agent
-# from src.agents.react_agent import build_agent, run_agent
-# We'll do a minimal version inline if you prefer.
+from src.agents.react_agent import build_agent
 
-###############################################################################
-# 1) Load environment
-###############################################################################
 load_dotenv()
 
 USERNAME = os.getenv("CHATAPP_USERNAME", "admin")
 PASSWORD = os.getenv("CHATAPP_PASSWORD", "password123")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
-###############################################################################
-# 2) Initialize a ReAct agent (example)
-###############################################################################
-# For demonstration, let's just mock out a "fake_agent" function
-# In your real code, you might do something like:
-#   agent = build_agent("gpt-4o-mini", model_provider="openai")
-# Then define a function to call the agent with user messages.
-
-
-def mock_agent_respond(user_query: str) -> str:
-    # In reality, call your agent
-    # result = run_agent(agent, user_query)  # or .invoke(...) depending on your setup
-    return f"Agent response to: {user_query}"
-
-
-###############################################################################
-# 3) Streamlit UI with Basic Auth
-###############################################################################
 def check_credentials(username_input, password_input):
-    """Return True if username/password match the environment vars."""
     return (username_input == USERNAME) and (password_input == PASSWORD)
 
 
 def login_ui():
-    """Renders sidebar login fields."""
     st.sidebar.title("Login")
     username_input = st.sidebar.text_input("Username", value="", key="login_username")
     password_input = st.sidebar.text_input(
@@ -51,53 +25,82 @@ def login_ui():
     if st.sidebar.button("Login"):
         if check_credentials(username_input, password_input):
             st.session_state["logged_in"] = True
-            # Store the logged-in username in session, separate from the widget key
             st.session_state["username"] = username_input
+            st.session_state["messages"] = []
+            st.session_state["agent"] = None
             st.rerun()
         else:
             st.sidebar.error("Invalid username or password.")
 
 
 def main():
-    st.title("AnalystGPT Chat UI")
+    st.set_page_config(
+        page_title="Chatbot Demo (Streaming)", page_icon="💬", layout="centered"
+    )
+    st.title("💬 Streaming Chatbot")
+    st.caption("A Streamlit chatbot that streams tokens as they arrive.")
 
-    # 3A) Check if user is logged in
+    if not OPENAI_API_KEY:
+        st.error("No OpenAI API key found in environment. Please set OPENAI_API_KEY.")
+        st.stop()
+
     if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
         login_ui()
-        return  # Stop rendering further if not logged in.
+        return
 
-    # 3B) If logged in, show chat interface
-    st.sidebar.success(f"Logged in as {st.session_state['username']}")
+    with st.sidebar:
+        st.write("You are logged in as:", st.session_state["username"])
+        if st.button("Logout"):
+            st.session_state["logged_in"] = False
+            st.session_state["messages"] = []
+            st.session_state["agent"] = None
+            st.rerun()
 
-    # A place to store conversation history in session
+    # Build the agent once
+    if "agent" not in st.session_state or st.session_state["agent"] is None:
+        agent_executor = build_agent(model_name="gpt-4o-mini", model_provider="openai")
+        st.session_state["agent"] = agent_executor
+
     if "messages" not in st.session_state:
-        st.session_state["messages"] = []
+        st.session_state["messages"] = [
+            {"role": "assistant", "content": "Hello! How can I help you today?"}
+        ]
 
-    # Chat input
-    user_input = st.text_input("Ask a question:", value="")
-    if st.button("Send") and user_input:
-        # Add user query to conversation history
-        st.session_state["messages"].append(("User", user_input))
+    # Display existing conversation
+    for msg in st.session_state["messages"]:
+        st.chat_message(msg["role"]).write(msg["content"])
 
-        # Call the agent
-        # In real code: response = run_agent(agent, user_input)
-        response = mock_agent_respond(user_input)
+    user_input = st.chat_input("Type your message here...")
+    if user_input:
+        # 1) Display user message immediately
+        st.session_state["messages"].append({"role": "user", "content": user_input})
+        st.chat_message("user").write(user_input)
 
-        # Add agent response
-        st.session_state["messages"].append(("Agent", response))
+        # 2) Now let's stream the agent's response token by token
+        response_text = ""
+        assistant_placeholder = st.chat_message(
+            "assistant"
+        )  # create "assistant" bubble
+        agent = st.session_state["agent"]
 
-    # Display conversation
-    for speaker, msg in st.session_state["messages"]:
-        if speaker == "User":
-            st.markdown(f"**You:** {msg}")
-        else:
-            st.markdown(f"**Agent:** {msg}")
+        # We'll pass something like {"messages": [HumanMessage(content=user_input)]}
+        # and ask for stream_mode="values"
+        from langchain_core.messages import HumanMessage
 
-    # Optional logout button
-    if st.sidebar.button("Logout"):
-        st.session_state["logged_in"] = False
-        st.session_state["messages"] = []
-        st.rerun()
+        messages = [HumanMessage(content=user_input)]
+
+        for step in agent.stream({"messages": messages}, stream_mode="values"):
+            # Each 'step' typically has the partial or updated content in step["messages"][-1].content
+            partial_text = step["messages"][-1].content
+            # If partial_text is the entire text so far, just overwrite.
+            # Or we can accumulate if it returns only the chunk diff.
+            response_text = partial_text
+            assistant_placeholder.write(response_text)
+
+        # 3) Once done, store final assistant message in session
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": response_text}
+        )
 
 
 if __name__ == "__main__":

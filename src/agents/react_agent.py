@@ -29,7 +29,7 @@ def build_agent(model_name="gpt-4o-mini", model_provider="openai"):
     return agent_executor
 
 
-def run_agent(agent_executor, user_query: str, stream=False):
+def run_agent(agent_executor, user_query: str, stream=True):
     """
     Helper function to run the agent on a user query.
     Optionally stream the response.
